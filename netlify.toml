@@ -1,0 +1,11 @@
+# This file configures your Netlify site.
+# It tells Netlify to apply rate-limiting to all serverless functions.
+
+[functions]
+  # This section applies to all functions in the netlify/functions/ directory
+  [functions."*"]
+    
+    # This is the rate-limiting rule.
+    # It allows 50 requests per IP address per hour.
+    # Since each dialogue runs 5 agents (5 requests), this equals 10 full dialogues per hour.
+    rate_limit = { period = 3600, limit = 50 }
