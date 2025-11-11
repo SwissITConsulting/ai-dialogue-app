@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Dialogue</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Apply Inter font */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        /* Custom loader animation */
+        .loader {
+            border: 4px solid #f3f3f3; /* Light grey */
+            border-top: 4px solid #4f46e5; /* Indigo */
+            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Style for the agent output paragraphs */
+        .agent-output {
+            text-gray-700;
+            whitespace-pre-wrap; /* Preserves newlines and spaces */
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white p-6 sm:p-10 rounded-2xl shadow-2xl max-w-4xl w-full">
+        <!-- Header -->
+        <h1 class="text-4xl font-bold text-center text-indigo-700 mb-2">
+            AI Dialogue
+        </h1>
+        <p class="text-center text-gray-600 mb-8">
+            Watch 5 AI agents reformulate your text in a sequential chain.
+        </p>
+
+        <!-- User Input Area -->
+        <div class="mb-6">
+            <label for="userInput" class="block text-lg font-semibold text-gray-800 mb-2">Enter your text:</label>
+            <textarea id="userInput"
+                class="w-full p-4 border border-gray-300 rounded-lg h-36 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
+                placeholder="Type or paste your text here..."></textarea>
+        </div>
+
+        <!-- Control Button -->
+        <button id="startButton"
+            class="w-full bg-indigo-600 text-white p-4 rounded-lg text-lg font-semibold hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-300 transition-all duration-200 ease-in-out disabled:bg-indigo-400 disabled:cursor-not-allowed">
+            Start Dialogue
+        </button>
+
+        <!-- Dialogue Chain Container -->
+        <div id="dialogueChain" class="mt-10 space-y-6">
+            <!-- Agent cards will be dynamically inserted here -->
+        </div>
+
+        <!-- Error Message Container -->
+        <div id="errorMessage" class="hidden mt-4 p-3 bg-red-100 border border-red-300 text-red-800 rounded-lg">
+        </div>
+    </div>
+
+    <script type="module">
+        // --- Constants ---
+        const NUM_AGENTS = 5;
+        const MAX_RETRIES = 3;
+        const API_KEY = ""; // API key is handled by the environment
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`;
+
+        // A pool of styles for the agents to pick from
+        const STYLE_POOL = [
+            "a very artistic and poetic style, using rich metaphors",
+            "a strictly scientific and technical style, focusing on precision",
+            "a casual and conversational style, as if talking to a friend",
+            "a formal and academic style, suitable for a research paper",
+            "a humorous and witty style, using puns and clever wordplay",
+            "a journalistic and objective style, sticking to the facts",
+            "a mysterious and intriguing style, hinting at a deeper story",
+            "a very enthusiastic and positive style, using exclamation points",
+            "a skeptical and critical style, questioning the premise",
+            "a simple style, as if explaining to a 5-year-old",
+            "a dramatic and theatrical style, fit for a stage play",
+            "a minimalist style, using as few words as possible",
+            "an ancient, almost biblical style",
+            "a futuristic, sci-fi style, using technical jargon"
+        ];
+
+        // --- DOM Elements ---
+        const startButton = document.getElementById('startButton');
+        const userInput = document.getElementById('userInput');
+        const dialogueChain = document.getElementById('dialogueChain');
+        const errorMessage = document.getElementById('errorMessage');
+
+        // --- Event Listener ---
+        startButton.addEventListener('click', handleStartDialogue);
+
+        // --- Core Functions ---
+
+        /**
+         * Main function to handle starting the dialogue chain.
+         */
+        async function handleStartDialogue() {
+            const initialText = userInput.value.trim();
+            if (!initialText) {
+                showError("Please enter some text to begin.");
+                return;
+            }
+
+            // Disable button and clear old results
+            setLoadingState(true);
+            dialogueChain.innerHTML = '';
+            hideError();
+
+            let currentText = initialText;
+            const selectedStyles = selectRandomStyles(NUM_AGENTS);
+
+            try {
+                // Loop through each agent
+                for (let i = 0; i < NUM_AGENTS; i++) {
+                    const agentNum = i + 1;
+                    const style = selectedStyles[i];
+
+                    // Create a placeholder card for the agent
+                    const agentCard = createAgentCard(agentNum, style);
+                    dialogueChain.appendChild(agentCard);
+
+                    // Call the AI to reformulate the text
+                    const reformulatedText = await callGemini(currentText, style);
+
+                    // Update the agent card with the result
+                    updateAgentCard(agentCard, reformulatedText);
+
+                    // Set up for the next agent
+                    currentText = reformulatedText;
+
+                    // Scroll to the new card
+                    agentCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                }
+            } catch (error) {
+                console.error("Error during dialogue chain:", error);
+                showError(`An error occurred: ${error.message}. Please try again.`);
+            } finally {
+                // Re-enable the button
+                setLoadingState(false);
+            }
+        }
+
+        /**
+         * Calls the Gemini API to reformulate the text.
+         * Implements exponential backoff for retries.
+         */
+        async function callGemini(inputText, style, attempt = 1) {
+            // System prompt to guide the AI
+            const systemPrompt = `You are an expert text reformulator. Your task is to rewrite the given text in a new style.
+You MUST adhere to the following rules:
+1.  The rewritten text MUST be in the **same language** as the original input text.
+2.  The rewritten text MUST have **approximately the same length** (word count or character count) as the original input text.
+3.  You MUST rewrite the text in the following style: **${style}**.
+4.  Respond ONLY with the rewritten text. Do not add apologies, preambles, explanations, or any other text.`;
+
+            const payload = {
+                contents: [{ "parts": [{ "text": inputText }] }],
+                systemInstruction: {
+                    "parts": [{ "text": systemPrompt }]
+                },
+                generationConfig: {
+                    "temperature": 0.8,
+                    "topP": 0.9,
+                    "topK": 40
+                }
+            };
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API Error: ${response.status} ${response.statusText}`);
+                }
+
+                const result = await response.json();
+                
+                if (!result.candidates || !result.candidates[0].content?.parts?.[0]?.text) {
+                    console.error("Invalid API response:", result);
+                    throw new Error("Received an invalid response from the AI.");
+                }
+
+                return result.candidates[0].content.parts[0].text;
+
+            } catch (error) {
+                console.warn(`Attempt ${attempt} failed:`, error.message);
+                if (attempt >= MAX_RETRIES) {
+                    throw new Error(`Failed to get reformulation after ${MAX_RETRIES} attempts. ${error.message}`);
+                }
+                
+                // Exponential backoff: 1s, 2s, 4s
+                const delay = Math.pow(2, attempt - 1) * 1000;
+                await new Promise(res => setTimeout(res, delay));
+                
+                // Retry
+                return callGemini(inputText, style, attempt + 1);
+            }
+        }
+
+        /**
+         * Selects a number of unique random styles from the pool.
+         */
+        function selectRandomStyles(count) {
+            // Shuffle the array and take the first 'count' elements
+            const shuffled = [...STYLE_POOL].sort(() => 0.5 - Math.random());
+            return shuffled.slice(0, count);
+        }
+
+        /**
+         * Creates and returns a new agent card with a loading state.
+         */
+        function createAgentCard(agentNum, style) {
+            const card = document.createElement('div');
+            card.className = 'bg-gray-50 p-5 rounded-xl shadow-lg border border-gray-200 transition-all duration-300';
+            card.innerHTML = `
+                <h3 class="text-xl font-semibold text-indigo-700 mb-3">
+                    Agent ${agentNum}
+                    <span class="text-base font-medium text-gray-600 ml-2">(${style})</span>
+                </h3>
+                <div class="agent-content flex items-center justify-center h-20">
+                    <div class="loader"></div>
+                </div>
+            `;
+            return card;
+        }
+
+        /**
+         * Updates an agent card with the final reformulated text.
+         */
+        function updateAgentCard(card, text) {
+            const content = card.querySelector('.agent-content');
+            // Sanitize text slightly to prevent HTML injection, though textContent is safer
+            const p = document.createElement('p');
+            p.className = 'agent-output';
+            p.textContent = text; // Using textContent automatically escapes HTML
+            
+            content.innerHTML = ''; // Clear the loader
+            content.appendChild(p);
+            content.classList.remove('flex', 'items-center', 'justify-center', 'h-20');
+        }
+
+        /**
+         * Manages the loading state of the start button.
+         */
+        function setLoadingState(isLoading) {
+            if (isLoading) {
+                startButton.disabled = true;
+                startButton.textContent = 'Processing Dialogue...';
+            } else {
+                startButton.disabled = false;
+                startButton.textContent = 'Start Dialogue';
+            }
+        }
+
+        /**
+         * Shows an error message to the user.
+         */
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('hidden');
+        }
+
+        /**
+         * Hides the error message.
+         */
+        function hideError() {
+            errorMessage.classList.add('hidden');
+        }
+
+    </script>
+</body>
+</html>
